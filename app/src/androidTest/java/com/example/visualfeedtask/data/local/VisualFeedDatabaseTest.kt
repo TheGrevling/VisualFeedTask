@@ -34,11 +34,13 @@ class VisualFeedDatabaseTest {
     fun storyMetadataAndThumbnailPathSurviveDatabaseReopen() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "persistence-test-${UUID.randomUUID()}.db"
-        val story = StoryEntity(1, "Persisted", "alice", 5, 100, null, "/files/1.png")
+        val story = StoryEntity(1, "Persisted", "alice", 5, 100, null, "/files/1.jpg")
         try {
             val firstDatabase = Room.databaseBuilder(context, VisualFeedDatabase::class.java, name).build()
             try {
-                firstDatabase.storyDao().upsertStories(listOf(story))
+                firstDatabase.storyDao().upsertStories(listOf(story.copy(thumbnailPath = null)))
+                assertEquals(1, firstDatabase.thumbnailDao().setThumbnailPath(1, "/files/1.jpg"))
+                assertEquals(0, firstDatabase.thumbnailDao().setThumbnailPath(99, "/files/99.jpg"))
             } finally {
                 firstDatabase.close()
             }

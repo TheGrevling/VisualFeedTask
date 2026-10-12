@@ -2,7 +2,8 @@
 
 Android take-home project in progress. The feed loads Hacker News Top stories,
 caches their metadata in Room, and displays saved stories when connectivity fails.
-On-device image generation is not implemented yet.
+Feed cards display cached on-device MediaPipe thumbnails and request generation
+as cards enter the lazy list.
 
 ## Stack
 
@@ -34,12 +35,12 @@ data/local       Room database, entities, and DAO
 data/model       Models exposed by repositories
 data/remote      Hacker News API and nullable remote item DTO
 data/repository  Network story loading, persistence and offline fallback
-data/thumbnail   On-device thumbnail generation contract
+data/thumbnail   MediaPipe generation and durable story-ID thumbnail cache
 ui/feed          Screen state, ViewModel, lifecycle-aware route, stateless screen
 ui/theme         Material theme
 ```
 
-UI and ViewModels only access the repository, never HTTP clients, Room, Context, or
+UI and ViewModels only access repositories, never HTTP clients, Room, Context, or
 ML runtimes. `FeedViewModel` calls `StoryRepository.getStories()` on initialization.
 The repository calls `HackerNewsApiImpl`, which supplies URLs to `HttpClient.get(url)` and decodes
 responses on the injectable IO dispatcher. For example, `getTopStoryIds()` fetches
@@ -54,8 +55,8 @@ The repository fetches the Top ID list once and requests item details in batches
 of 20 IDs, with at most eight concurrent requests within each batch. Each result
 includes a `StoryPageKey` containing the ID snapshot and next offset. It filters
 missing, deleted, dead and non-story items, preserves API order, and persists
-metadata before returning it. Existing thumbnail paths are retained when titles
-have not changed.
+metadata before returning it. Existing thumbnail paths are retained by story ID,
+even when a title changes.
 
 When the last loaded story becomes visible, `FeedScreen` sends
 `FeedIntent.ReachedBottom` through `onIntent` to the ViewModel. It requests the
@@ -74,10 +75,87 @@ cancellation are not treated as offline success. Offline cache order is
 newest-first, not the last fetched Top ranking; cache entries from earlier
 fetches are retained.
 
-The ML threading requirement remains part of the real `ThumbnailGenerator`
-implementation: use the injectable Default dispatcher for CPU-bound inference
-and IO for model loading and image file writes. Do not run inference through the
-HTTP client.
+## On-device thumbnails
+
+On-device generation is **disabled by default**
+(`BuildConfig.DISABLE_ON_DEVICE_IMAGE_GENERATION = true`): cards show the app's
+launcher icon, and no model is loaded. To enable generation for devices with
+enough RAM and an installed model:
+
+```sh
+./gradlew :app:installDebug -PdisableOnDeviceImageGeneration=false
+```
+
+When enabled, Hilt binds `ThumbnailGenerator` to the singleton `MediaPipeThumbnailGenerator`.
+Call `generateThumbnail(storyId, title)` from a coroutine; it returns the absolute
+path of an app-private JPEG or propagates model, inference and storage errors.
+Files live in `files/thumbnails/<storyId>.jpg`, survive process restarts, and
+are reused by story ID regardless of title changes. Cache hits do not load the
+model. Invalid cache entries are regenerated. Images are center-cropped to
+320 x 180, compressed to at most 64 KiB, and written atomically. The cache is
+durable, not Android's disposable `cacheDir`; no eviction policy is applied yet.
+
+A mutex serializes inference and prevents duplicate concurrent generation.
+Filesystem validation and persistence use injectable IO; MediaPipe creation,
+synchronous inference, image encoding and cleanup run in one uninterrupted block
+on injectable Default. Native initialization also stays on that worker because
+the GPU context must be created, used and closed on the same thread. Models are
+released after each uncached request to avoid retaining large allocations while
+idle; this trades repeated initialization time for lower idle RAM usage.
+Cancellation is propagated; a running native call cannot be interrupted, but its
+result is not persisted after the requesting coroutine is cancelled.
+
+Cards send `RequestThumbnail` when composed in the lazy list (including its small
+prefetch window). The ViewModel queues requests in a fair FIFO order and runs one
+at a time: the active card shows "Generating thumbnail..." and waiting cards show
+"Queued". Story loading/pagination stays responsive. The
+thumbnail repository validates/reuses cached images through the generator and
+updates only the story's thumbnail column in Room before publishing its path.
+Coil loads local files asynchronously into a fixed 16:9 area. Generation/loading
+shows a progress placeholder; model, inference, storage or decode failure shows
+"Thumbnail unavailable" with a per-card retry. Scrolling does not automatically
+retry failed requests. Cached paths can display immediately while being checked.
+Missing model weights do not prevent stories from loading, but show thumbnail
+errors until compatible weights are installed and generation is retried.
+
+### Model provisioning
+
+The APK contains the runtime, **not model weights**. Provision a licensed,
+MediaPipe-compatible converted Stable Diffusion v1.5 model directory into
+`context.noBackupFilesDir/image_generator/` before requesting an uncached story.
+It is excluded from Android backups automatically. For a debuggable development
+installation, after launching the app once:
+
+```sh
+# Local bins/ must contain the complete converted model, not an archive.
+adb shell run-as com.example.visualfeedtask mkdir -p no_backup/image_generator
+tar -C /path/to/converted/bins -cf - . | \
+  adb shell run-as com.example.visualfeedtask tar -xf - -C no_backup/image_generator
+```
+
+See the [Google MediaPipe image-generation codelab](https://codelabs.developers.google.com/mp-image-generation-basic-android)
+for model conversion guidance. Release provisioning/download UI is not included;
+`run-as` is only available for debuggable builds. Do not point at a standalone
+`.bin`, arbitrary Hugging Face checkpoint, or unverified quantized/LCM weights.
+The published API is `setImageGeneratorModelDirectory(...)` followed by
+`generate(prompt, iterations, seed)`; it does not expose an LCM scheduler block
+or `ConditionOptions.setNumInferenceSteps`.
+
+The default is 20 iterations. For a model **verified to support low-step inference
+with this runtime**, configure 4 steps at build time:
+
+```sh
+./gradlew :app:assembleDebug -PthumbnailInferenceSteps=4
+```
+
+Accepted values are 1-50. Reducing steps alone does not convert SD v1.5 into LCM
+or guarantee coherent output. Quantization compatibility, execution time,
+peak RAM and image quality must be measured with the actual model on supported
+physical devices. Google's codelab specifies at least 8 GB RAM; no lower-RAM or
+3-5 second guarantee is assumed. Inference requires a physical device with a
+vendor OpenCL GPU driver; Android emulators fail with "Can not open OpenCL
+library" and show thumbnail errors. Small cached JPEGs do not reduce model footprint
+or native inference resolution. There is no Canvas fallback masquerading as AI.
 
 ## Build
 
@@ -98,13 +176,10 @@ database version, and add migrations; do not use destructive migration fallbacks
 
 - Add refresh for a loaded feed. Persist Top ranking
   if offline feeds must retain that order rather than showing newest saved stories.
-- Select and integrate a real on-device text-to-image model, including licensing,
-  model provisioning, device requirements and failure handling. Implement
-  `ThumbnailGenerator` with serialized/background inference and durable image
-  files in app-private storage (not disposable cache storage).
-- Persist generated paths before exposing them to the UI. Define generation
-  progress and retry behavior and verify offline app restarts on a device.
-- Add images and submission time to the feed cards and an image loader when needed.
+- Select, license and provision compatible model weights for release, validate
+  device requirements and benchmark inference on real hardware.
+- Verify generated image quality and offline app restarts on a physical device.
+- Add submission time to feed cards.
 - Expand fake-based repository/ViewModel tests and UI regression coverage as those
   behaviors land. Add Navigation 3 only if there is more than one screen.
 - Add Macrobenchmark and generate real Baseline/Startup Profiles once the actual

@@ -6,6 +6,11 @@ plugins {
     alias(libs.plugins.androidx.room)
 }
 
+val thumbnailInferenceSteps = providers.gradleProperty("thumbnailInferenceSteps")
+    .getOrElse("20").toInt().also { require(it in 1..50) }
+val disableOnDeviceImageGeneration = providers.gradleProperty("disableOnDeviceImageGeneration")
+    .getOrElse("true").toBooleanStrict()
+
 android {
     namespace = "com.example.visualfeedtask"
     compileSdk {
@@ -20,6 +25,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("int", "THUMBNAIL_INFERENCE_STEPS", thumbnailInferenceSteps.toString())
+        buildConfigField(
+            "boolean", "DISABLE_ON_DEVICE_IMAGE_GENERATION", disableOnDeviceImageGeneration.toString(),
+        )
     }
 
     buildTypes {
@@ -37,6 +46,9 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
 }
 
@@ -65,7 +77,10 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
     implementation(libs.gson)
+    implementation(libs.mediapipe.image.generator)
+    implementation(libs.coil.compose)
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     androidTestImplementation(libs.kotlinx.coroutines.test)

@@ -4,6 +4,7 @@ import com.example.visualfeedtask.data.model.Story
 import com.example.visualfeedtask.data.model.StoryFeed
 import com.example.visualfeedtask.data.model.StoryPageKey
 import com.example.visualfeedtask.data.repository.StoryRepository
+import com.example.visualfeedtask.data.repository.StoryThumbnailRepository
 import com.example.visualfeedtask.testing.MainDispatcherRule
 import com.google.gson.JsonParseException
 import java.io.IOException
@@ -22,6 +23,8 @@ class FeedViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     private val story = Story(1, "Kotlin news", "author", 42, 100, null, "/files/1.png")
+    private fun FeedViewModel(repository: StoryRepository): FeedViewModel =
+        FeedViewModel(repository, StoryThumbnailRepository { "/files/${it.id}.jpg" })
 
     @Test
     fun `starts loading then requests repository stories without requiring a subscriber`() = runTest {
@@ -187,6 +190,208 @@ class FeedViewModelTest {
             viewModel.uiState.value,
         )
         assertEquals(listOf(null, emptyPage, populatedPage), repository.requestedPages)
+    }
+
+    @Test
+    fun `visible story thumbnail loads independently and suppresses duplicate requests`() = runTest {
+        val withoutImage = story.copy(thumbnailPath = null)
+        val repository = FakeStoryRepository().apply { result = StoryFeed(listOf(withoutImage)) }
+        val gate = CompletableDeferred<String>()
+        var calls = 0
+        val viewModel = FeedViewModel(repository, StoryThumbnailRepository {
+            calls++
+            gate.await()
+        })
+        runCurrent()
+        assertEquals(FeedUiState.Ready(listOf(withoutImage)), viewModel.uiState.value)
+        assertEquals(0, calls)
+
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        runCurrent()
+        assertEquals(1, calls)
+        assertEquals(
+            FeedUiState.Ready(listOf(withoutImage), loadingThumbnails = setOf(story.id)),
+            viewModel.uiState.value,
+        )
+
+        gate.complete("/files/1.jpg")
+        runCurrent()
+        assertEquals(
+            FeedUiState.Ready(listOf(story.copy(thumbnailPath = "/files/1.jpg"))),
+            viewModel.uiState.value,
+        )
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        runCurrent()
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun `disabled image generation never requests thumbnails`() = runTest {
+        val repository = FakeStoryRepository().apply { result = StoryFeed(listOf(story)) }
+        var calls = 0
+        val viewModel = FeedViewModel(
+            repository,
+            StoryThumbnailRepository { calls++; "/files/1.jpg" },
+            imageGenerationDisabled = true,
+        )
+        runCurrent()
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        viewModel.onIntent(FeedIntent.RetryThumbnail(story.id))
+        runCurrent()
+        assertEquals(0, calls)
+        assertEquals(
+            FeedUiState.Ready(listOf(story), imageGenerationEnabled = false),
+            viewModel.uiState.value,
+        )
+    }
+
+    @Test
+    fun `only one thumbnail generates while later requests stay queued in order`() = runTest {
+        val second = story.copy(id = 2, thumbnailPath = null)
+        val third = story.copy(id = 3, thumbnailPath = null)
+        val first = story.copy(thumbnailPath = null)
+        val repository = FakeStoryRepository().apply { result = StoryFeed(listOf(first, second, third)) }
+        val gates = mapOf(1L to CompletableDeferred<String>(), 2L to CompletableDeferred(), 3L to CompletableDeferred())
+        val started = mutableListOf<Long>()
+        val viewModel = FeedViewModel(repository, StoryThumbnailRepository {
+            started += it.id
+            gates.getValue(it.id).await()
+        })
+        runCurrent()
+        listOf(1L, 2L, 3L).forEach { viewModel.onIntent(FeedIntent.RequestThumbnail(it)) }
+        runCurrent()
+        var state = viewModel.uiState.value as FeedUiState.Ready
+        assertEquals(listOf(1L), started)
+        assertEquals(setOf(1L), state.loadingThumbnails)
+        assertEquals(setOf(2L, 3L), state.queuedThumbnails)
+
+        gates.getValue(1).complete("/files/1.jpg")
+        runCurrent()
+        state = viewModel.uiState.value as FeedUiState.Ready
+        assertEquals(listOf(1L, 2L), started)
+        assertEquals(setOf(2L), state.loadingThumbnails)
+        assertEquals(setOf(3L), state.queuedThumbnails)
+
+        gates.getValue(2).completeExceptionally(IOException("Inference failed"))
+        runCurrent()
+        state = viewModel.uiState.value as FeedUiState.Ready
+        assertEquals(listOf(1L, 2L, 3L), started)
+        assertEquals(setOf(2L), state.failedThumbnails)
+        assertEquals(setOf(3L), state.loadingThumbnails)
+        assertEquals(emptySet<Long>(), state.queuedThumbnails)
+
+        gates.getValue(3).complete("/files/3.jpg")
+        runCurrent()
+        state = viewModel.uiState.value as FeedUiState.Ready
+        assertEquals(emptySet<Long>(), state.loadingThumbnails)
+    }
+
+    @Test
+    fun `thumbnail errors keep stories usable and retry only the failed image`() = runTest {
+        val withoutImage = story.copy(thumbnailPath = null)
+        val repository = FakeStoryRepository().apply { result = StoryFeed(listOf(withoutImage)) }
+        var fail = true
+        var calls = 0
+        val viewModel = FeedViewModel(repository, StoryThumbnailRepository {
+            calls++
+            if (fail) throw IOException("Missing model")
+            "/files/1.jpg"
+        })
+        runCurrent()
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        runCurrent()
+        assertEquals(
+            FeedUiState.Ready(listOf(withoutImage), failedThumbnails = setOf(story.id)),
+            viewModel.uiState.value,
+        )
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        runCurrent()
+        assertEquals(1, calls)
+
+        fail = false
+        viewModel.onIntent(FeedIntent.RetryThumbnail(story.id))
+        runCurrent()
+        assertEquals(
+            FeedUiState.Ready(listOf(story.copy(thumbnailPath = "/files/1.jpg"))),
+            viewModel.uiState.value,
+        )
+        assertEquals(1, repository.calls)
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun `pagination does not overwrite thumbnails generated while page request was running`() = runTest {
+        val page = StoryPageKey(listOf(1, 2), offset = 1)
+        val second = story.copy(id = 2, thumbnailPath = null)
+        val gate = CompletableDeferred<Unit>()
+        val repository = FakeStoryRepository().apply {
+            result = StoryFeed(listOf(story.copy(thumbnailPath = null)), nextPage = page)
+            pageResults[page] = StoryFeed(listOf(second))
+            pageGate = gate
+        }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.ReachedBottom)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(
+            FeedUiState.Ready(listOf(story.copy(thumbnailPath = "/files/1.jpg"), second)),
+            viewModel.uiState.value,
+        )
+    }
+
+    @Test
+    fun `pagination failure preserves concurrent thumbnail updates`() = runTest {
+        val page = StoryPageKey(listOf(1, 2), offset = 1)
+        val gate = CompletableDeferred<Unit>()
+        val repository = FakeStoryRepository().apply {
+            result = StoryFeed(listOf(story.copy(thumbnailPath = null)), nextPage = page)
+            pageGate = gate
+            pageErrors[page] = IOException("Offline")
+        }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.ReachedBottom)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(
+            FeedUiState.Ready(
+                listOf(story.copy(thumbnailPath = "/files/1.jpg")),
+                hasMore = true,
+                loadMoreFailed = true,
+            ),
+            viewModel.uiState.value,
+        )
+    }
+
+    @Test
+    fun `image decoder failure offers retry even after successful generation`() = runTest {
+        val repository = FakeStoryRepository().apply { result = StoryFeed(listOf(story)) }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.RequestThumbnail(story.id))
+        runCurrent()
+        viewModel.onIntent(FeedIntent.ThumbnailLoadFailed(story.id))
+        assertEquals(
+            FeedUiState.Ready(
+                listOf(story.copy(thumbnailPath = "/files/1.jpg")),
+                failedThumbnails = setOf(story.id),
+            ),
+            viewModel.uiState.value,
+        )
+        viewModel.onIntent(FeedIntent.RetryThumbnail(story.id))
+        runCurrent()
+        assertEquals(
+            FeedUiState.Ready(listOf(story.copy(thumbnailPath = "/files/1.jpg"))),
+            viewModel.uiState.value,
+        )
     }
 }
 

@@ -260,7 +260,7 @@ class OfflineFirstStoryRepositoryTest {
     }
 
     @Test
-    fun `changed titles discard stale generated thumbnail paths`() = runTest {
+    fun `changed titles retain story ID cached thumbnail paths`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val api = FakeHackerNewsApi(dispatcher).apply {
             ids = listOf(7L)
@@ -269,7 +269,7 @@ class OfflineFirstStoryRepositoryTest {
 
         val feed = OfflineFirstStoryRepository(FakeStoryDao(listOf(cached)), api, dispatcher).getStories()
 
-        assertEquals(null, feed.stories.single().thumbnailPath)
+        assertEquals(cached.thumbnailPath, feed.stories.single().thumbnailPath)
     }
 }
 

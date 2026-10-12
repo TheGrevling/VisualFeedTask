@@ -96,6 +96,6 @@ private fun HackerNewsItemDto.toEntity(cached: StoryEntity?): StoryEntity? {
         submittedAtEpochSeconds = submittedAtEpochSeconds
             ?: throw JsonParseException("Story is missing its submission time"),
         url = url,
-        thumbnailPath = cached?.thumbnailPath?.takeIf { cached.title == title },
+        thumbnailPath = cached?.thumbnailPath,
     )
 }

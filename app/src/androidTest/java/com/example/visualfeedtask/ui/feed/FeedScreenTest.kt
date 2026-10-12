@@ -2,14 +2,23 @@ package com.example.visualfeedtask.ui.feed
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.runtime.mutableStateOf
 import com.example.visualfeedtask.ui.theme.VisualFeedTaskTheme
 import com.example.visualfeedtask.data.model.Story
 import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
+import android.graphics.Bitmap
+import androidx.test.core.app.ApplicationProvider
+import android.content.Context
+import java.io.File
+import java.util.UUID
 
 class FeedScreenTest {
     @get:Rule
@@ -60,6 +69,148 @@ class FeedScreenTest {
     }
 
     @Test
+    fun visibleStoryRequestsThumbnailAndDisplaysProgress() {
+        val intents = mutableListOf<FeedIntent>()
+        composeRule.setContent {
+            VisualFeedTaskTheme {
+                FeedScreen(
+                    FeedUiState.Ready(
+                        listOf(Story(7, "Story", "alice", 42, 100, null, null)),
+                        loadingThumbnails = setOf(7),
+                    ),
+                    onIntent = intents::add,
+                )
+            }
+        }
+        composeRule.onNodeWithText("Generating thumbnail...").assertIsDisplayed()
+        composeRule.runOnIdle {
+            assertEquals(listOf(FeedIntent.RequestThumbnail(7)), intents)
+        }
+    }
+
+    @Test
+    fun disabledGenerationShowsDefaultThumbnailWithoutRequests() {
+        val intents = mutableListOf<FeedIntent>()
+        composeRule.setContent {
+            VisualFeedTaskTheme {
+                FeedScreen(
+                    FeedUiState.Ready(
+                        listOf(Story(7, "Story", "alice", 42, 100, null, null)),
+                        imageGenerationEnabled = false,
+                    ),
+                    onIntent = intents::add,
+                )
+            }
+        }
+        composeRule.onNodeWithContentDescription("Default thumbnail").assertIsDisplayed()
+        composeRule.onNodeWithText("Generating thumbnail...").assertDoesNotExist()
+        composeRule.runOnIdle { assertEquals(emptyList<FeedIntent>(), intents) }
+    }
+
+    @Test
+    fun queuedThumbnailShowsQueuedWithoutGeneratingProgress() {
+        composeRule.setContent {
+            VisualFeedTaskTheme {
+                FeedScreen(
+                    FeedUiState.Ready(
+                        listOf(Story(7, "Story", "alice", 42, 100, null, null)),
+                        queuedThumbnails = setOf(7),
+                    ),
+                )
+            }
+        }
+        composeRule.onNodeWithText("Queued").assertIsDisplayed()
+        composeRule.onNodeWithText("Generating thumbnail...").assertDoesNotExist()
+    }
+
+    @Test
+    fun failedThumbnailHasIndependentRetry() {
+        val intents = mutableListOf<FeedIntent>()
+        composeRule.setContent {
+            VisualFeedTaskTheme {
+                FeedScreen(
+                    FeedUiState.Ready(
+                        listOf(Story(7, "Story", "alice", 42, 100, null, null)),
+                        failedThumbnails = setOf(7),
+                    ),
+                    onIntent = intents::add,
+                )
+            }
+        }
+        composeRule.onNodeWithText("Thumbnail unavailable.").assertIsDisplayed()
+        composeRule.onNodeWithText("Retry thumbnail").performClick()
+        composeRule.runOnIdle {
+            assertEquals(
+                listOf(FeedIntent.RequestThumbnail(7), FeedIntent.RetryThumbnail(7)), intents,
+            )
+        }
+    }
+
+    @Test
+    fun cachedLocalThumbnailIsDisplayedWithoutProgress() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val file = File(context.cacheDir, "thumbnail-test-${UUID.randomUUID()}.jpg")
+        val bitmap = Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888)
+        try {
+            file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 80, it)) }
+            composeRule.setContent {
+                VisualFeedTaskTheme {
+                    FeedScreen(
+                        FeedUiState.Ready(
+                            listOf(Story(7, "Story", "alice", 42, 100, null, file.absolutePath)),
+                        ),
+                    )
+                }
+            }
+            composeRule.waitUntil(timeoutMillis = 5_000) {
+                composeRule.onAllNodes(
+                    androidx.compose.ui.test.hasText("Generating thumbnail..."),
+                ).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.onNodeWithContentDescription("Illustration for Story").assertIsDisplayed()
+            composeRule.onNodeWithText("Generating thumbnail...").assertDoesNotExist()
+        } finally {
+            bitmap.recycle()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun regeneratedThumbnailReloadsWhenItsPathHasNotChanged() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val file = File(context.cacheDir, "thumbnail-test-${UUID.randomUUID()}.jpg")
+        val bitmap = Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888)
+        val story = Story(7, "Story", "alice", 42, 100, null, file.absolutePath)
+        val state = mutableStateOf(
+            FeedUiState.Ready(listOf(story), loadingThumbnails = setOf(7)),
+        )
+        val intents = mutableListOf<FeedIntent>()
+        try {
+            file.writeText("corrupt image")
+            composeRule.setContent {
+                VisualFeedTaskTheme {
+                    FeedScreen(state.value, onIntent = intents::add)
+                }
+            }
+            composeRule.waitUntil(timeoutMillis = 5_000) {
+                intents.contains(FeedIntent.ThumbnailLoadFailed(7))
+            }
+            file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 80, it)) }
+            composeRule.runOnIdle {
+                state.value = FeedUiState.Ready(listOf(story))
+            }
+            composeRule.waitUntil(timeoutMillis = 5_000) {
+                composeRule.onAllNodes(hasText("Generating thumbnail..."))
+                    .fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.onNodeWithContentDescription("Illustration for Story").assertIsDisplayed()
+        } finally {
+            bitmap.recycle()
+            file.delete()
+        }
+    }
+
+    @Test
     fun scrollingToLastStoryEmitsReachedBottom() {
         val intents = mutableListOf<FeedIntent>()
         val stories = (1L..25L).map { id ->
@@ -75,14 +226,16 @@ class FeedScreenTest {
         }
 
         composeRule.runOnIdle {
-            assertEquals(emptyList<FeedIntent>(), intents.toList())
+            assertEquals(emptyList<FeedIntent>(), intents.filter { it == FeedIntent.ReachedBottom })
         }
-        composeRule.onNodeWithText("Story 25").performScrollTo()
+        composeRule.onNode(hasScrollAction()).performScrollToNode(hasText("Story 25"))
         composeRule.waitUntil(timeoutMillis = 5_000) {
             intents.contains(FeedIntent.ReachedBottom)
         }
         composeRule.runOnIdle {
-            assertEquals(listOf(FeedIntent.ReachedBottom), intents.toList())
+            assertEquals(
+                listOf(FeedIntent.ReachedBottom), intents.filter { it == FeedIntent.ReachedBottom },
+            )
         }
     }
 }

@@ -7,4 +7,10 @@
     <string name="feed_load_more_error">Unable to load more stories. Please try again.</string>
     <string name="feed_retry">Retry</string>
     <string name="feed_story_metadata">By %1$s - %2$d points</string>
+    <string name="feed_thumbnail_description">Illustration for %1$s</string>
+    <string name="feed_thumbnail_loading">Generating thumbnail...</string>
+    <string name="feed_thumbnail_queued">Queued</string>
+    <string name="feed_default_thumbnail_description">Default thumbnail</string>
+    <string name="feed_thumbnail_error">Thumbnail unavailable.</string>
+    <string name="feed_thumbnail_retry">Retry thumbnail</string>
 </resources>

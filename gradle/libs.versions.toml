@@ -15,6 +15,9 @@ ksp = "2.3.12"
 room = "2.8.5"
 okhttp = "4.12.0"
 gson = "2.13.1"
+mediapipeImageGenerator = "0.10.20"
+robolectric = "4.16.1"
+coil = "2.7.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -46,6 +49,9 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+mediapipe-image-generator = { group = "com.google.mediapipe", name = "tasks-vision-image-generator", version.ref = "mediapipeImageGenerator" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
