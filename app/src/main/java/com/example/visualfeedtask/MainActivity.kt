@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
             VisualFeedTaskTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     FeedRoute(
-                        modifier = Modifier.padding(innerPadding)
+                        modifier = Modifier.padding(innerPadding),
                     )
                 }
             }

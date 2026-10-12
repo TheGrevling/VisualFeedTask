@@ -1,17 +1,24 @@
 # Hacker News Visual AI Feed
 
-Android take-home project foundation. This is not yet the completed assignment:
-the app displays a setup screen backed by a local Room stream.
+Android take-home project in progress. The feed loads Hacker News Top stories,
+caches their metadata in Room, and displays saved stories when connectivity fails.
+On-device image generation is not implemented yet.
 
 ## Stack
 
 - Kotlin, single activity, Jetpack Compose, and Material 3.
 - Hilt constructor injection, singleton database/repository/API, and qualified
   injectable IO/Default coroutine dispatchers.
-- Retrofit with Gson and suspend Hacker News Top/New IDs and item endpoints.
+- OkHttp with Gson and suspend Hacker News Top/New IDs and item endpoints.
+- Main-safe `HttpClient`/`HttpClientImpl` HTTP GET requests on background threads,
+  propagating HTTP/transport failures and cancelling requests with their coroutines.
+- Debug-only OkHttp BODY logging in Logcat under `HTTPLOGGER`: URLs, methods,
+  status codes, timing, headers, bodies and failures. Credential/cookie headers
+  are redacted and long messages are split to avoid Logcat truncation. Release
+  builds disable HTTP logging; debug response bodies may still contain user data.
 - Room with exported schemas and persistent story metadata/thumbnail file paths.
-- Lifecycle-aware state collection and screen-level ViewModel `StateFlow` using
-  `SharingStarted.WhileSubscribed(5_000)`.
+- Lifecycle-aware state collection and screen-level ViewModel `StateFlow` with
+  loading, empty, error/retry and offline states.
 - JUnit, coroutine test utilities, Room instrumentation, and Compose UI testing.
 - R8 optimization and resource shrinking for release builds.
 
@@ -21,20 +28,56 @@ One app module is intentional for the 4-6 hour scope. Packages separate concerns
 
 ```text
 core/di          Injectable coroutine dispatchers
+core/network     Main-safe HTTP request execution
 data/di          Hilt bindings and providers
 data/local       Room database, entities, and DAO
 data/model       Models exposed by repositories
 data/remote      Hacker News API and nullable remote item DTO
-data/repository  Local single source of truth exposed as Flow
+data/repository  Network story loading, persistence and offline fallback
 data/thumbnail   On-device thumbnail generation contract
 ui/feed          Screen state, ViewModel, lifecycle-aware route, stateless screen
 ui/theme         Material theme
 ```
 
-UI and ViewModels only access the repository, never Retrofit, Room, Context, or
-ML runtimes. Room exposes cached stories ordered newest-first; this is **not**
-Hacker News Top ranking. The API is provided by Hilt but is deliberately not yet
-called. No fake generator is bound or presented as AI.
+UI and ViewModels only access the repository, never HTTP clients, Room, Context, or
+ML runtimes. `FeedViewModel` calls `StoryRepository.getStories()` on initialization.
+The repository calls `HackerNewsApiImpl`, which supplies URLs to `HttpClient.get(url)` and decodes
+responses on the injectable IO dispatcher. For example, `getTopStoryIds()` fetches
+`https://hacker-news.firebaseio.com/v0/topstories.json` and returns its JSON array
+as `List<Long>` in API order. `print=pretty` is unnecessary for JSON decoding.
+`HttpClientImpl` prepares requests on IO and uses cancellable asynchronous OkHttp
+calls, reading and closing response bodies on OkHttp's background threads.
+Failures propagate to callers for UI/retry handling rather than
+returning success-shaped defaults. No fake generator is bound or presented as AI.
+
+The repository fetches the Top ID list once and requests item details in batches
+of 20 IDs, with at most eight concurrent requests within each batch. Each result
+includes a `StoryPageKey` containing the ID snapshot and next offset. It filters
+missing, deleted, dead and non-story items, preserves API order, and persists
+metadata before returning it. Existing thumbnail paths are retained when titles
+have not changed.
+
+When the last loaded story becomes visible, `FeedScreen` sends
+`FeedIntent.ReachedBottom` through `onIntent` to the ViewModel. It requests the
+next page and appends the results without replacing existing cards or resetting
+scroll position. Duplicate in-flight requests are suppressed, fetching stops at
+the end, and fully filtered empty batches are skipped to keep pagination moving.
+Page errors retain the loaded stories and cursor; `FeedIntent.Retry` retries the
+same page rather than skipping it.
+
+A transport failure on the first page falls back to saved stories, also in
+batches of 20, and sets an offline flag. Later online pages can fall back to
+matching cached items only if the entire requested batch is saved; otherwise
+the feed displays a load-more error with Retry. Without any saved stories, an
+initial failure becomes an error with Retry. HTTP errors, invalid JSON and
+cancellation are not treated as offline success. Offline cache order is
+newest-first, not the last fetched Top ranking; cache entries from earlier
+fetches are retained.
+
+The ML threading requirement remains part of the real `ThumbnailGenerator`
+implementation: use the injectable Default dispatcher for CPU-bound inference
+and IO for model loading and image file writes. Do not run inference through the
+HTTP client.
 
 ## Build
 
@@ -53,16 +96,15 @@ database version, and add migrations; do not use destructive migration fallbacks
 
 ## Remaining assignment work
 
-- Add repository refresh/load-more actions, pagination state and retries. Preserve
-  remote ID order for a Top feed, and filter missing/deleted/dead/non-story items.
+- Add refresh for a loaded feed. Persist Top ranking
+  if offline feeds must retain that order rather than showing newest saved stories.
 - Select and integrate a real on-device text-to-image model, including licensing,
   model provisioning, device requirements and failure handling. Implement
   `ThumbnailGenerator` with serialized/background inference and durable image
   files in app-private storage (not disposable cache storage).
-- Persist fetched stories and generated paths before exposing them to the UI.
-  Define generation progress and retry behavior and verify offline app restarts.
-- Build paginated image cards with title, author, score and submission time, plus
-  loading, empty, error and offline states. Add an image loader when needed.
+- Persist generated paths before exposing them to the UI. Define generation
+  progress and retry behavior and verify offline app restarts on a device.
+- Add images and submission time to the feed cards and an image loader when needed.
 - Expand fake-based repository/ViewModel tests and UI regression coverage as those
   behaviors land. Add Navigation 3 only if there is more than one screen.
 - Add Macrobenchmark and generate real Baseline/Startup Profiles once the actual

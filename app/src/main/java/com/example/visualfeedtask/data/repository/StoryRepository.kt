@@ -1,8 +1,8 @@
 package com.example.visualfeedtask.data.repository
 
-import com.example.visualfeedtask.data.model.Story
-import kotlinx.coroutines.flow.Flow
+import com.example.visualfeedtask.data.model.StoryFeed
+import com.example.visualfeedtask.data.model.StoryPageKey
 
 interface StoryRepository {
-    fun observeStories(): Flow<List<Story>>
+    suspend fun getStories(page: StoryPageKey? = null): StoryFeed
 }
