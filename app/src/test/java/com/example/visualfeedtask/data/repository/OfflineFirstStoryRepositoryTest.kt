@@ -117,6 +117,39 @@ class OfflineFirstStoryRepositoryTest {
     }
 
     @Test
+    fun `offline top stories are ordered by score and new stories by submission time`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val highScoreOld = StoryEntity(1, "Popular", "alice", 500, 100, null, null)
+        val lowScoreNew = StoryEntity(2, "Fresh", "bob", 3, 300, null, null)
+        val midScoreMid = StoryEntity(3, "Middle", "carol", 50, 200, null, null)
+        val dao = FakeStoryDao(listOf(lowScoreNew, highScoreOld, midScoreMid))
+        val repository = OfflineFirstStoryRepository(dao, FakeHackerNewsApi(dispatcher), { false }, dispatcher)
+
+        val top = repository.getStories(feedType = StoryFeedType.TOP)
+        val new = repository.getStories(feedType = StoryFeedType.NEW)
+
+        assertEquals(listOf(1L, 3L, 2L), top.stories.map { it.id })
+        assertEquals(listOf(2L, 3L, 1L), new.stories.map { it.id })
+        assertTrue(top.isOffline && new.isOffline)
+    }
+
+    @Test
+    fun `offline pagination keeps the selected feed ordering`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val stories = (1L..25L).map { StoryEntity(it, "Story $it", "alice", it.toInt(), 1000 - it, null, null) }
+        val repository = OfflineFirstStoryRepository(
+            FakeStoryDao(stories), FakeHackerNewsApi(dispatcher), { false }, dispatcher,
+        )
+
+        val first = repository.getStories(feedType = StoryFeedType.TOP)
+        val second = repository.getStories(first.nextPage, StoryFeedType.TOP)
+
+        assertEquals((25L downTo 6L).toList(), first.stories.map { it.id })
+        assertEquals((5L downTo 1L).toList(), second.stories.map { it.id })
+        assertEquals(null, second.nextPage)
+    }
+
+    @Test
     fun `known offline device without cached stories returns an empty offline feed`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val api = FakeHackerNewsApi(dispatcher)
@@ -212,7 +245,7 @@ class OfflineFirstStoryRepositoryTest {
     fun `offline initial fallback pages cached IDs twenty at a time`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val cachedStories = (1L..45L).map { id ->
-            StoryEntity(id, "Story $id", "alice", 42, 1234, null, null)
+            StoryEntity(id, "Story $id", "alice", (100 - id).toInt(), 1234, null, null)
         }
         val api = FakeHackerNewsApi(dispatcher).apply {
             idsFailure = IOException("Offline")
@@ -326,6 +359,18 @@ private class FakeStoryDao(initial: List<StoryEntity> = emptyList()) : StoryDao 
     var upsertCount = 0
     var lastUpsert = emptyList<StoryEntity>()
     override fun observeStories(): Flow<List<StoryEntity>> = stories
+
+    override suspend fun getStoriesBySubmissionTime(): List<StoryEntity> =
+        stories.value.sortedWith(
+            compareByDescending<StoryEntity> { it.submittedAtEpochSeconds }.thenByDescending { it.id },
+        )
+
+    override suspend fun getStoriesByScore(): List<StoryEntity> =
+        stories.value.sortedWith(
+            compareByDescending<StoryEntity> { it.score }
+                .thenByDescending { it.submittedAtEpochSeconds }
+                .thenByDescending { it.id },
+        )
 
     override suspend fun upsertStories(stories: List<StoryEntity>) {
         upsertCount++

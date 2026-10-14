@@ -31,6 +31,23 @@ class VisualFeedDatabaseTest {
     }
 
     @Test
+    fun storiesCanBeOrderedByScoreOrSubmissionTime() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, VisualFeedDatabase::class.java).build()
+        try {
+            val popular = StoryEntity(1, "Popular", "alice", 500, 100, null, null)
+            val fresh = StoryEntity(2, "Fresh", "bob", 3, 300, null, null)
+            val middle = StoryEntity(3, "Middle", "carol", 50, 200, null, null)
+            database.storyDao().upsertStories(listOf(fresh, popular, middle))
+
+            assertEquals(listOf(popular, middle, fresh), database.storyDao().getStoriesByScore())
+            assertEquals(listOf(fresh, middle, popular), database.storyDao().getStoriesBySubmissionTime())
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun storyMetadataAndThumbnailPathSurviveDatabaseReopen() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "persistence-test-${UUID.randomUUID()}.db"

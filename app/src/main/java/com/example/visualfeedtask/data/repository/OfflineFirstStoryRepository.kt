@@ -19,7 +19,6 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -34,7 +33,11 @@ class OfflineFirstStoryRepository @Inject constructor(
         page: StoryPageKey?,
         feedType: StoryFeedType,
     ): StoryFeed = withContext(ioDispatcher) {
-        val cached = storyDao.observeStories().first()
+        // Offline, saved stories are ordered to mirror the selected feed's ranking.
+        val cached = when (feedType) {
+            StoryFeedType.TOP -> storyDao.getStoriesByScore()
+            StoryFeedType.NEW -> storyDao.getStoriesBySubmissionTime()
+        }
         val cachedById = cached.associateBy { it.id }
         if (page?.isOffline == true) {
             return@withContext cachedPage(page, cachedById)

@@ -5,40 +5,7 @@ caches their metadata in Room, and displays saved stories when connectivity fail
 Feed cards display cached on-device MediaPipe thumbnails and request generation
 as cards enter the lazy list.
 
-## Stack
-
-- Kotlin, single activity, Jetpack Compose, and Material 3.
-- Hilt constructor injection, singleton database/repository/API, and qualified
-  injectable IO/Default coroutine dispatchers.
-- OkHttp with Gson and suspend Hacker News Top/New IDs and item endpoints.
-- Main-safe `HttpClient`/`HttpClientImpl` HTTP GET requests on background threads,
-  propagating HTTP/transport failures and cancelling requests with their coroutines.
-- Debug-only OkHttp BODY logging in Logcat under `HTTPLOGGER`: URLs, methods,
-  status codes, timing, headers, bodies and failures. Credential/cookie headers
-  are redacted and long messages are split to avoid Logcat truncation. Release
-  builds disable HTTP logging; debug response bodies may still contain user data.
-- Room with exported schemas and persistent story metadata/thumbnail file paths.
-- Lifecycle-aware state collection and screen-level ViewModel `StateFlow` with
-  loading, empty, error/retry and offline states.
-- JUnit, coroutine test utilities, Room instrumentation, and Compose UI testing.
-- R8 optimization and resource shrinking for release builds.
-
 ## Architecture
-
-One app module is intentional for the 4-6 hour scope. Packages separate concerns:
-
-```text
-core/di          Injectable coroutine dispatchers
-core/network     Main-safe HTTP request execution
-data/di          Hilt bindings and providers
-data/local       Room database, entities, and DAO
-data/model       Models exposed by repositories
-data/remote      Hacker News API and nullable remote item DTO
-data/repository  Network story loading, persistence and offline fallback
-data/thumbnail   MediaPipe generation and durable story-ID thumbnail cache
-ui/feed          Screen state, ViewModel, lifecycle-aware route, stateless screen
-ui/theme         Material theme
-```
 
 UI and ViewModels only access repositories, never HTTP clients, Room, Context, or
 ML runtimes. `FeedViewModel` calls `StoryRepository.getStories()` on initialization.
@@ -168,23 +135,6 @@ Minimum Android version is API 24.
 ./gradlew :app:connectedDebugAndroidTest  # Requires an emulator or device
 ./gradlew :app:assembleRelease
 ```
-
-Commit generated `app/schemas/` files when changing the database, increment the
-database version, and add migrations; do not use destructive migration fallbacks.
-
-## Remaining assignment work
-
-- Add refresh for a loaded feed. Persist Top ranking
-  if offline feeds must retain that order rather than showing newest saved stories.
-- Select, license and provision compatible model weights for release, validate
-  device requirements and benchmark inference on real hardware.
-- Verify generated image quality and offline app restarts on a physical device.
-- Add submission time to feed cards.
-- Expand fake-based repository/ViewModel tests and UI regression coverage as those
-  behaviors land. Add Navigation 3 only if there is more than one screen.
-- Add Macrobenchmark and generate real Baseline/Startup Profiles once the actual
-  feed and inference flows exist; fabricated profiles would not measure the app.
-
 
 All items have some of the following properties, with required properties in bold:
 

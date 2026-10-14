@@ -81,6 +81,18 @@ private class IntegrationStoryDao : StoryDao {
 
     override fun observeStories(): Flow<List<StoryEntity>> = savedStories
 
+    override suspend fun getStoriesBySubmissionTime(): List<StoryEntity> =
+        savedStories.value.sortedWith(
+            compareByDescending<StoryEntity> { it.submittedAtEpochSeconds }.thenByDescending { it.id },
+        )
+
+    override suspend fun getStoriesByScore(): List<StoryEntity> =
+        savedStories.value.sortedWith(
+            compareByDescending<StoryEntity> { it.score }
+                .thenByDescending { it.submittedAtEpochSeconds }
+                .thenByDescending { it.id },
+        )
+
     override suspend fun upsertStories(stories: List<StoryEntity>) {
         savedStories.value = stories
     }
