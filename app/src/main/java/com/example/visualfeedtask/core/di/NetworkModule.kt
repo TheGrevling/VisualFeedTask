@@ -3,7 +3,9 @@ package com.example.visualfeedtask.core.di
 import android.util.Log
 import com.example.visualfeedtask.BuildConfig
 import com.example.visualfeedtask.core.network.HttpClient
+import com.example.visualfeedtask.core.network.ConnectivityNetworkMonitor
 import com.example.visualfeedtask.core.network.HttpClientImpl
+import com.example.visualfeedtask.core.network.NetworkMonitor
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -19,6 +21,10 @@ abstract class NetworkModule {
     @Binds
     @Singleton
     abstract fun bindHttpClient(client: HttpClientImpl): HttpClient
+
+    @Binds
+    @Singleton
+    abstract fun bindNetworkMonitor(monitor: ConnectivityNetworkMonitor): NetworkMonitor
 
     companion object {
         @Provides

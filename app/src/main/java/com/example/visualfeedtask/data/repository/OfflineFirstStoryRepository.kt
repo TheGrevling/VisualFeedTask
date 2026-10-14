@@ -2,10 +2,13 @@ package com.example.visualfeedtask.data.repository
 
 import com.example.visualfeedtask.core.di.IoDispatcher
 import com.example.visualfeedtask.core.network.HttpException
+import com.example.visualfeedtask.core.network.NetworkMonitor
+import com.example.visualfeedtask.core.network.NoNetworkException
 import com.example.visualfeedtask.data.local.StoryDao
 import com.example.visualfeedtask.data.local.StoryEntity
 import com.example.visualfeedtask.data.local.toStory
 import com.example.visualfeedtask.data.model.StoryFeed
+import com.example.visualfeedtask.data.model.StoryFeedType
 import com.example.visualfeedtask.data.model.StoryPageKey
 import com.example.visualfeedtask.data.remote.HackerNewsApi
 import com.example.visualfeedtask.data.remote.HackerNewsItemDto
@@ -24,16 +27,27 @@ import kotlinx.coroutines.withContext
 class OfflineFirstStoryRepository @Inject constructor(
     private val storyDao: StoryDao,
     private val api: HackerNewsApi,
+    private val networkMonitor: NetworkMonitor,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
 ) : StoryRepository {
-    override suspend fun getStories(page: StoryPageKey?): StoryFeed = withContext(ioDispatcher) {
+    override suspend fun getStories(
+        page: StoryPageKey?,
+        feedType: StoryFeedType,
+    ): StoryFeed = withContext(ioDispatcher) {
         val cached = storyDao.observeStories().first()
         val cachedById = cached.associateBy { it.id }
         if (page?.isOffline == true) {
             return@withContext cachedPage(page, cachedById)
         }
         val (currentPage, entities) = try {
-            val key = page ?: StoryPageKey(api.getTopStoryIds().distinct(), offset = 0)
+            if (!networkMonitor.isOnline()) throw NoNetworkException()
+            val key = page ?: StoryPageKey(
+                when (feedType) {
+                    StoryFeedType.TOP -> api.getTopStoryIds()
+                    StoryFeedType.NEW -> api.getNewStoryIds()
+                }.distinct(),
+                offset = 0,
+            )
             val fetched = coroutineScope {
                 val requests = Semaphore(8)
                 key.storyIds.drop(key.offset).take(PAGE_SIZE).map { id ->
@@ -50,7 +64,14 @@ class OfflineFirstStoryRepository @Inject constructor(
             }
             key to fetched
         } catch (failure: IOException) {
-            if (failure is HttpException || cached.isEmpty()) throw failure
+            if (failure is HttpException) throw failure
+            if (cached.isEmpty()) {
+                // A known-offline device with nothing saved shows an empty offline feed, not an error.
+                if (page == null && failure is NoNetworkException) {
+                    return@withContext StoryFeed(emptyList(), isOffline = true)
+                }
+                throw failure
+            }
             if (page == null) {
                 return@withContext cachedPage(
                     StoryPageKey(cached.map { it.id }, offset = 0, isOffline = true),

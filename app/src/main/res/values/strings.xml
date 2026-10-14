@@ -2,11 +2,16 @@
     <string name="app_name">VisualFeedTask</string>
     <string name="feed_title">Hacker News Visual Feed</string>
     <string name="feed_empty">No stories to display.</string>
+    <string name="feed_offline_empty">You\'re offline and no stories have been saved yet. Connect to the internet to load stories.</string>
     <string name="feed_offline">Network unavailable. Showing saved stories.</string>
     <string name="feed_load_error">Unable to load stories. Please try again.</string>
     <string name="feed_load_more_error">Unable to load more stories. Please try again.</string>
+    <string name="feed_top_stories">Top stories</string>
+    <string name="feed_new_stories">New stories</string>
+    <string name="feed_refresh_error">Unable to refresh stories.</string>
     <string name="feed_retry">Retry</string>
     <string name="feed_story_metadata">By %1$s - %2$d points</string>
+    <string name="feed_story_submitted_at">Submitted %1$s</string>
     <string name="feed_thumbnail_description">Illustration for %1$s</string>
     <string name="feed_thumbnail_loading">Generating thumbnail...</string>
     <string name="feed_thumbnail_queued">Queued</string>

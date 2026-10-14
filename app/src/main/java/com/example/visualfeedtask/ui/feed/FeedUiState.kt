@@ -10,6 +10,8 @@ sealed interface FeedUiState {
         val hasMore: Boolean = false,
         val isLoadingMore: Boolean = false,
         val loadMoreFailed: Boolean = false,
+        val isRefreshing: Boolean = false,
+        val refreshFailed: Boolean = false,
         val queuedThumbnails: Set<Long> = emptySet(),
         val loadingThumbnails: Set<Long> = emptySet(),
         val failedThumbnails: Set<Long> = emptySet(),

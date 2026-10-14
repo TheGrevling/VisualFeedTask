@@ -6,6 +6,8 @@ data class StoryFeed(
     val nextPage: StoryPageKey? = null,
 )
 
+enum class StoryFeedType { TOP, NEW }
+
 data class StoryPageKey(
     val storyIds: List<Long>,
     val offset: Int,

@@ -6,6 +6,7 @@ import com.example.visualfeedtask.data.di.ImageGenerationDisabled
 import com.example.visualfeedtask.data.repository.StoryRepository
 import com.example.visualfeedtask.data.repository.StoryThumbnailRepository
 import com.example.visualfeedtask.data.model.Story
+import com.example.visualfeedtask.data.model.StoryFeedType
 import com.example.visualfeedtask.data.model.StoryPageKey
 import com.google.gson.JsonParseException
 import com.google.mediapipe.framework.MediaPipeException
@@ -26,10 +27,12 @@ import kotlinx.coroutines.sync.withLock
 class FeedViewModel @Inject constructor(
     private val storyRepository: StoryRepository,
     private val thumbnailRepository: StoryThumbnailRepository,
-    @ImageGenerationDisabled private val imageGenerationDisabled: Boolean = false,
+    @ImageGenerationDisabled private val imageGenerationDisabled: Boolean,
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow<FeedUiState>(FeedUiState.Loading)
     val uiState: StateFlow<FeedUiState> = mutableUiState.asStateFlow()
+    private val mutableSelectedFeed = MutableStateFlow(StoryFeedType.TOP)
+    val selectedFeed: StateFlow<StoryFeedType> = mutableSelectedFeed.asStateFlow()
     private var loadJob: Job? = null
     private var nextPage: StoryPageKey? = null
     private val completedThumbnails = mutableSetOf<Long>()
@@ -51,6 +54,8 @@ class FeedViewModel @Inject constructor(
                     } else state
                 }
             }
+            is FeedIntent.SelectFeed -> selectFeed(intent.feedType)
+            FeedIntent.Refresh -> refresh()
             FeedIntent.ReachedBottom -> {
                 val state = mutableUiState.value as? FeedUiState.Ready ?: return
                 if (state.hasMore && !state.loadMoreFailed) loadNextPage(state)
@@ -59,6 +64,9 @@ class FeedViewModel @Inject constructor(
                 val state = mutableUiState.value
                 if (state is FeedUiState.Ready && state.loadMoreFailed) loadNextPage(state)
                 else if (state == FeedUiState.Error) loadStories()
+                else if (state is FeedUiState.Ready && state.isOffline && state.stories.isEmpty()) {
+                    loadStories()
+                }
             }
         }
     }
@@ -119,12 +127,57 @@ class FeedViewModel @Inject constructor(
         }
     }
 
+    private fun selectFeed(feedType: StoryFeedType) {
+        if (feedType == mutableSelectedFeed.value) return
+        mutableSelectedFeed.value = feedType
+        loadJob?.cancel()
+        nextPage = null
+        loadStories()
+    }
+
+    private fun refresh() {
+        when (val state = mutableUiState.value) {
+            FeedUiState.Loading -> return
+            FeedUiState.Error -> loadStories()
+            is FeedUiState.Ready -> {
+                if (state.isRefreshing) return
+                // Refreshing supersedes any in-flight pagination for the same feed.
+                loadJob?.cancel()
+                mutableUiState.value = state.copy(
+                    isRefreshing = true,
+                    refreshFailed = false,
+                    isLoadingMore = false,
+                    loadMoreFailed = false,
+                )
+                val feedType = mutableSelectedFeed.value
+                loadJob = viewModelScope.launch {
+                    try {
+                        loadPage(null, emptyList(), isOffline = false, feedType, replace = true)
+                    } catch (failure: IOException) {
+                        markRefreshFailed()
+                    } catch (failure: JsonParseException) {
+                        markRefreshFailed()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun markRefreshFailed() {
+        mutableUiState.update { current ->
+            if (current is FeedUiState.Ready) {
+                current.copy(isRefreshing = false, refreshFailed = true)
+            } else current
+        }
+    }
+
     fun loadStories() {
         if (loadJob?.isActive == true) return
+        val feedType = mutableSelectedFeed.value
+        mutableUiState.value = FeedUiState.Loading
         loadJob = viewModelScope.launch {
-            mutableUiState.value = FeedUiState.Loading
             try {
-                loadPage(null, emptyList(), isOffline = false)
+                loadPage(null, emptyList(), isOffline = false, feedType)
             } catch (failure: IOException) {
                 mutableUiState.value = FeedUiState.Error
             } catch (failure: JsonParseException) {
@@ -140,7 +193,7 @@ class FeedViewModel @Inject constructor(
         mutableUiState.value = state.copy(isLoadingMore = true, loadMoreFailed = false)
         loadJob = viewModelScope.launch {
             try {
-                loadPage(page, state.stories, state.isOffline)
+                loadPage(page, state.stories, state.isOffline, mutableSelectedFeed.value)
             } catch (failure: IOException) {
                 markLoadMoreFailed()
             } catch (failure: JsonParseException) {
@@ -161,11 +214,13 @@ class FeedViewModel @Inject constructor(
         page: StoryPageKey?,
         existing: List<Story>,
         isOffline: Boolean,
+        feedType: StoryFeedType,
+        replace: Boolean = false,
     ) {
         var key = page
         var offline = isOffline
         do {
-            val feed = storyRepository.getStories(key)
+            val feed = storyRepository.getStories(key, feedType)
             offline = offline || feed.isOffline
             key = feed.nextPage
             // Skip batches containing only missing/deleted/non-story items so scrolling can continue.
@@ -176,11 +231,14 @@ class FeedViewModel @Inject constructor(
                     (ready ?: FeedUiState.Ready(
                         emptyList(), imageGenerationEnabled = !imageGenerationDisabled,
                     )).copy(
-                        stories = ((ready?.stories ?: existing) + feed.stories).distinctBy { it.id },
+                        stories = ((if (replace) existing else ready?.stories ?: existing) + feed.stories)
+                            .distinctBy { it.id },
                         isOffline = offline,
                         hasMore = key != null,
                         isLoadingMore = false,
                         loadMoreFailed = false,
+                        isRefreshing = false,
+                        refreshFailed = false,
                     )
                 }
                 return

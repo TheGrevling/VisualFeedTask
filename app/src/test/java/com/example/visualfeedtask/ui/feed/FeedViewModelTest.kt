@@ -2,6 +2,7 @@ package com.example.visualfeedtask.ui.feed
 
 import com.example.visualfeedtask.data.model.Story
 import com.example.visualfeedtask.data.model.StoryFeed
+import com.example.visualfeedtask.data.model.StoryFeedType
 import com.example.visualfeedtask.data.model.StoryPageKey
 import com.example.visualfeedtask.data.repository.StoryRepository
 import com.example.visualfeedtask.data.repository.StoryThumbnailRepository
@@ -23,8 +24,10 @@ class FeedViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     private val story = Story(1, "Kotlin news", "author", 42, 100, null, "/files/1.png")
-    private fun FeedViewModel(repository: StoryRepository): FeedViewModel =
-        FeedViewModel(repository, StoryThumbnailRepository { "/files/${it.id}.jpg" })
+    private fun FeedViewModel(
+        repository: StoryRepository,
+        thumbnails: StoryThumbnailRepository = StoryThumbnailRepository { "/files/${it.id}.jpg" },
+    ): FeedViewModel = FeedViewModel(repository, thumbnails, imageGenerationDisabled = false)
 
     @Test
     fun `starts loading then requests repository stories without requiring a subscriber`() = runTest {
@@ -36,6 +39,128 @@ class FeedViewModelTest {
         runCurrent()
 
         assertEquals(1, repository.calls)
+        assertEquals(FeedUiState.Ready(listOf(story)), viewModel.uiState.value)
+    }
+
+    @Test
+    fun `defaults to top stories and switching reloads the selected feed`() = runTest {
+        val newStory = story.copy(id = 2, title = "New story")
+        val repository = FakeStoryRepository().apply {
+            feedResults[StoryFeedType.TOP] = StoryFeed(listOf(story))
+            feedResults[StoryFeedType.NEW] = StoryFeed(listOf(newStory))
+        }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        assertEquals(StoryFeedType.TOP, viewModel.selectedFeed.value)
+        assertEquals(FeedUiState.Ready(listOf(story)), viewModel.uiState.value)
+
+        viewModel.onIntent(FeedIntent.SelectFeed(StoryFeedType.NEW))
+        assertEquals(FeedUiState.Loading, viewModel.uiState.value)
+        runCurrent()
+        assertEquals(StoryFeedType.NEW, viewModel.selectedFeed.value)
+        assertEquals(FeedUiState.Ready(listOf(newStory)), viewModel.uiState.value)
+
+        viewModel.onIntent(FeedIntent.SelectFeed(StoryFeedType.NEW))
+        runCurrent()
+        assertEquals(listOf(StoryFeedType.TOP, StoryFeedType.NEW), repository.requestedFeedTypes)
+    }
+
+    @Test
+    fun `switching feeds cancels an in-flight load`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val repository = FakeStoryRepository().apply {
+            this.gate = gate
+            feedResults[StoryFeedType.TOP] = StoryFeed(listOf(story))
+            feedResults[StoryFeedType.NEW] = StoryFeed(listOf(story.copy(id = 2)))
+        }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.SelectFeed(StoryFeedType.NEW))
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(FeedUiState.Ready(listOf(story.copy(id = 2))), viewModel.uiState.value)
+    }
+
+    @Test
+    fun `refresh replaces stories with the first page of the selected feed`() = runTest {
+        val newStory = story.copy(id = 2, title = "New story")
+        val secondPage = StoryPageKey(listOf(2L, 3L), offset = 1)
+        val repository = FakeStoryRepository().apply {
+            feedResults[StoryFeedType.TOP] = StoryFeed(listOf(story))
+            feedResults[StoryFeedType.NEW] = StoryFeed(listOf(newStory), nextPage = secondPage)
+            pageResults[secondPage] = StoryFeed(listOf(story.copy(id = 3)))
+        }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.SelectFeed(StoryFeedType.NEW))
+        runCurrent()
+        viewModel.onIntent(FeedIntent.ReachedBottom)
+        runCurrent()
+        assertEquals(2, (viewModel.uiState.value as FeedUiState.Ready).stories.size)
+
+        val refreshed = newStory.copy(title = "Refreshed")
+        repository.feedResults[StoryFeedType.NEW] = StoryFeed(listOf(refreshed))
+        viewModel.onIntent(FeedIntent.Refresh)
+        assertEquals(true, (viewModel.uiState.value as FeedUiState.Ready).isRefreshing)
+        runCurrent()
+
+        assertEquals(FeedUiState.Ready(listOf(refreshed)), viewModel.uiState.value)
+        assertEquals(StoryFeedType.NEW, repository.requestedFeedTypes.last())
+        assertEquals(null, repository.requestedPages.last())
+    }
+
+    @Test
+    fun `failed refresh keeps existing stories and reports the failure`() = runTest {
+        val repository = FakeStoryRepository().apply { result = StoryFeed(listOf(story)) }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+
+        repository.error = IOException("Offline")
+        viewModel.onIntent(FeedIntent.Refresh)
+        runCurrent()
+        assertEquals(FeedUiState.Ready(listOf(story), refreshFailed = true), viewModel.uiState.value)
+
+        repository.error = null
+        viewModel.onIntent(FeedIntent.Refresh)
+        runCurrent()
+        assertEquals(FeedUiState.Ready(listOf(story)), viewModel.uiState.value)
+    }
+
+    @Test
+    fun `refresh cancels in-flight pagination`() = runTest {
+        val next = StoryPageKey(listOf(1L, 2L), offset = 1)
+        val pageGate = CompletableDeferred<Unit>()
+        val repository = FakeStoryRepository().apply {
+            result = StoryFeed(listOf(story), nextPage = next)
+            pageResults[next] = StoryFeed(listOf(story.copy(id = 2)))
+            this.pageGate = pageGate
+        }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        viewModel.onIntent(FeedIntent.ReachedBottom)
+        runCurrent()
+
+        repository.result = StoryFeed(listOf(story))
+        viewModel.onIntent(FeedIntent.Refresh)
+        pageGate.complete(Unit)
+        runCurrent()
+
+        assertEquals(FeedUiState.Ready(listOf(story)), viewModel.uiState.value)
+    }
+
+    @Test
+    fun `retry reloads an empty offline feed`() = runTest {
+        val repository = FakeStoryRepository().apply { result = StoryFeed(emptyList(), isOffline = true) }
+        val viewModel = FeedViewModel(repository)
+        runCurrent()
+        assertEquals(FeedUiState.Ready(emptyList(), isOffline = true), viewModel.uiState.value)
+
+        repository.result = StoryFeed(listOf(story))
+        viewModel.onIntent(FeedIntent.Retry)
+        runCurrent()
+
+        assertEquals(2, repository.calls)
         assertEquals(FeedUiState.Ready(listOf(story)), viewModel.uiState.value)
     }
 
@@ -403,15 +528,18 @@ private class FakeStoryRepository : StoryRepository {
     val pageResults = mutableMapOf<StoryPageKey, StoryFeed>()
     val pageErrors = mutableMapOf<StoryPageKey, Exception>()
     val requestedPages = mutableListOf<StoryPageKey?>()
+    val requestedFeedTypes = mutableListOf<StoryFeedType>()
+    val feedResults = mutableMapOf<StoryFeedType, StoryFeed>()
     var calls = 0
 
-    override suspend fun getStories(page: StoryPageKey?): StoryFeed {
+    override suspend fun getStories(page: StoryPageKey?, feedType: StoryFeedType): StoryFeed {
         calls++
         requestedPages += page
+        requestedFeedTypes += feedType
         gate?.await()
         if (page != null) pageGate?.await()
         if (page != null) pageErrors[page]?.let { throw it }
         error?.let { throw it }
-        return page?.let(pageResults::get) ?: result
+        return page?.let(pageResults::get) ?: feedResults[feedType] ?: result
     }
 }

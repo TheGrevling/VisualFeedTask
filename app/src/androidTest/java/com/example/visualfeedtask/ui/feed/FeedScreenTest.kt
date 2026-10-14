@@ -10,8 +10,15 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.runtime.mutableStateOf
 import com.example.visualfeedtask.ui.theme.VisualFeedTaskTheme
 import com.example.visualfeedtask.data.model.Story
+import com.example.visualfeedtask.data.model.StoryFeedType
+import com.example.visualfeedtask.ui.feed.models.formatSubmissionTime
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import org.junit.Rule
 import org.junit.Test
 import android.graphics.Bitmap
@@ -37,6 +44,56 @@ class FeedScreenTest {
     }
 
     @Test
+    fun feedTypeButtonsDefaultToTopAndSendSelection() {
+        val intents = mutableListOf<FeedIntent>()
+        composeRule.setContent {
+            VisualFeedTaskTheme {
+                FeedScreen(FeedUiState.Ready(emptyList()), onIntent = { intents += it })
+            }
+        }
+
+        composeRule.onNodeWithText("Top stories").assertIsSelected()
+        composeRule.onNodeWithText("New stories").assertIsNotSelected().performClick()
+
+        assertEquals(listOf(FeedIntent.SelectFeed(StoryFeedType.NEW)), intents)
+    }
+
+    @Test
+    fun offlineFeedWithoutSavedStoriesExplainsEmptinessAndOffersRetry() {
+        val intents = mutableListOf<FeedIntent>()
+        composeRule.setContent {
+            VisualFeedTaskTheme {
+                FeedScreen(FeedUiState.Ready(emptyList(), isOffline = true), onIntent = { intents += it })
+            }
+        }
+
+        composeRule.onNodeWithText(
+            "You're offline and no stories have been saved yet. Connect to the internet to load stories.",
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText("Retry").performClick()
+
+        assertEquals(listOf<FeedIntent>(FeedIntent.Retry), intents)
+    }
+
+    @Test
+    fun pullingDownRequestsRefresh() {
+        val intents = mutableListOf<FeedIntent>()
+        composeRule.setContent {
+            VisualFeedTaskTheme {
+                FeedScreen(
+                    FeedUiState.Ready(listOf(Story(1, "Kotlin news", "alice", 42, 100, null, null))),
+                    onIntent = { intents += it },
+                )
+            }
+        }
+
+        composeRule.onNode(hasScrollAction()).performTouchInput { swipeDown() }
+        composeRule.waitForIdle()
+
+        assertTrue(FeedIntent.Refresh in intents)
+    }
+
+    @Test
     fun offlineFeedDisplaysSavedStory() {
         composeRule.setContent {
             VisualFeedTaskTheme {
@@ -52,6 +109,7 @@ class FeedScreenTest {
         composeRule.onNodeWithText("Network unavailable. Showing saved stories.").assertIsDisplayed()
         composeRule.onNodeWithText("Kotlin news").assertIsDisplayed()
         composeRule.onNodeWithText("By alice - 42 points").assertIsDisplayed()
+        composeRule.onNodeWithText("Submitted ${formatSubmissionTime(100)}").assertIsDisplayed()
     }
 
     @Test

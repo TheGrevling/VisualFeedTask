@@ -1,27 +1,24 @@
 package com.example.visualfeedtask.ui.feed
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,21 +27,16 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.visualfeedtask.R
-import com.example.visualfeedtask.data.model.Story
-import coil.compose.AsyncImage
-import coil.compose.AsyncImagePainter
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import com.example.visualfeedtask.data.model.StoryFeedType
+import com.example.visualfeedtask.ui.feed.models.StoryCard
 import androidx.compose.runtime.key
-import androidx.compose.runtime.setValue
-import java.io.File
 import com.example.visualfeedtask.ui.theme.VisualFeedTaskTheme
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -54,17 +46,25 @@ fun FeedRoute(
     viewModel: FeedViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val selectedFeed by viewModel.selectedFeed.collectAsStateWithLifecycle()
     //This is a single screen project, navigation is not required.
-    FeedScreen(uiState = uiState, modifier = modifier, onIntent = viewModel::onIntent)
+    FeedScreen(
+        uiState = uiState,
+        modifier = modifier,
+        selectedFeed = selectedFeed,
+        onIntent = viewModel::onIntent,
+    )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FeedScreen(
     uiState: FeedUiState,
     modifier: Modifier = Modifier,
+    selectedFeed: StoryFeedType = StoryFeedType.TOP,
     onIntent: (FeedIntent) -> Unit = {},
 ) {
-    val listState = rememberLazyListState()
+    val listState = key(selectedFeed) { rememberLazyListState() }
     val currentOnIntent by rememberUpdatedState(onIntent)
     val ready = uiState as? FeedUiState.Ready
     LaunchedEffect(ready?.stories?.size, ready?.hasMore, ready?.loadMoreFailed) {
@@ -86,58 +86,68 @@ fun FeedScreen(
             text = stringResource(R.string.feed_title),
             style = MaterialTheme.typography.headlineMedium,
         )
-        when (uiState) {
-            FeedUiState.Loading -> CircularProgressIndicator()
-            FeedUiState.Error -> {
-                Text(text = stringResource(R.string.feed_load_error))
-                Button(onClick = { onIntent(FeedIntent.Retry) }) {
-                    Text(text = stringResource(R.string.feed_retry))
+        FeedTypeSelector(selectedFeed = selectedFeed, onIntent = onIntent)
+        PullToRefreshBox(
+            isRefreshing = ready?.isRefreshing == true,
+            onRefresh = { onIntent(FeedIntent.Refresh) },
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) {
+            when (uiState) {
+                FeedUiState.Loading -> ScrollableMessage { CircularProgressIndicator() }
+                FeedUiState.Error -> ScrollableMessage {
+                    Text(text = stringResource(R.string.feed_load_error))
+                    Button(onClick = { onIntent(FeedIntent.Retry) }) {
+                        Text(text = stringResource(R.string.feed_retry))
+                    }
                 }
-            }
-            is FeedUiState.Ready -> {
-                if (uiState.isOffline) {
-                    Text(text = stringResource(R.string.feed_offline))
-                }
-                if (uiState.stories.isEmpty()) {
-                    Text(text = stringResource(R.string.feed_empty))
+                is FeedUiState.Ready -> if (uiState.stories.isEmpty()) {
+                    ScrollableMessage {
+                        if (uiState.refreshFailed) {
+                            Text(text = stringResource(R.string.feed_refresh_error))
+                        }
+                        if (uiState.isOffline) {
+                            Text(
+                                text = stringResource(R.string.feed_offline_empty),
+                                textAlign = TextAlign.Center,
+                            )
+                            Button(onClick = { onIntent(FeedIntent.Retry) }) {
+                                Text(text = stringResource(R.string.feed_retry))
+                            }
+                        } else {
+                            Text(text = stringResource(R.string.feed_empty))
+                        }
+                    }
                 } else {
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        items(uiState.stories, key = { it.id }) { story ->
-                            Card(modifier = Modifier.fillMaxWidth()) {
-                                if (uiState.imageGenerationEnabled) {
-                                    StoryThumbnail(
-                                        story = story,
-                                        failed = story.id in uiState.failedThumbnails,
-                                        generating = story.id in uiState.loadingThumbnails,
-                                        queued = story.id in uiState.queuedThumbnails,
-                                        onIntent = onIntent,
-                                    )
-                                } else {
-                                    DefaultThumbnail()
-                                }
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    Text(story.title, style = MaterialTheme.typography.titleMedium)
-                                    Text(
-                                        stringResource(
-                                            R.string.feed_story_metadata, story.author, story.score,
-                                        ),
-                                    )
-                                }
+                        if (uiState.refreshFailed) {
+                            item(key = "refresh-error") {
+                                Text(stringResource(R.string.feed_refresh_error))
                             }
+                        }
+                        if (uiState.isOffline) {
+                            item(key = "offline") { Text(stringResource(R.string.feed_offline)) }
+                        }
+                        items(uiState.stories, key = { it.id }) { story ->
+                            StoryCard(
+                                story = story,
+                                imageGenerationEnabled = uiState.imageGenerationEnabled,
+                                thumbnailFailed = story.id in uiState.failedThumbnails,
+                                thumbnailGenerating = story.id in uiState.loadingThumbnails,
+                                thumbnailQueued = story.id in uiState.queuedThumbnails,
+                                onIntent = onIntent,
+                            )
                         }
                         if (uiState.isLoadingMore) {
                             item(key = "loading") { CircularProgressIndicator() }
                         }
                         if (uiState.loadMoreFailed) {
                             item(key = "retry") {
-                                Column {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text(stringResource(R.string.feed_load_more_error))
                                     Button(onClick = { onIntent(FeedIntent.Retry) }) {
                                         Text(stringResource(R.string.feed_retry))
@@ -153,72 +163,33 @@ fun FeedScreen(
 }
 
 @Composable
-private fun DefaultThumbnail() {
-    val description = stringResource(R.string.feed_default_thumbnail_description)
-    Box(
-        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .semantics { contentDescription = description },
-        contentAlignment = Alignment.Center,
-    ) {
-        // Adaptive launcher icons are unsupported by painterResource, so draw its vector layers.
-        Box(modifier = Modifier.size(96.dp).clip(CircleShape)) {
-            Image(painterResource(R.drawable.ic_launcher_background), null, Modifier.fillMaxSize())
-            Image(painterResource(R.drawable.ic_launcher_foreground), null, Modifier.fillMaxSize())
-        }
-    }
+private fun ScrollableMessage(content: @Composable ColumnScope.() -> Unit) {
+    // Scrollable so the pull-to-refresh gesture also works on non-list states.
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        content = content,
+    )
 }
 
 @Composable
-private fun StoryThumbnail(
-    story: Story,
-    failed: Boolean,
-    generating: Boolean,
-    queued: Boolean,
+private fun FeedTypeSelector(
+    selectedFeed: StoryFeedType,
     onIntent: (FeedIntent) -> Unit,
 ) {
-    val currentOnIntent by rememberUpdatedState(onIntent)
-    LaunchedEffect(story.id) {
-        currentOnIntent(FeedIntent.RequestThumbnail(story.id))
-    }
-    var imageLoaded by remember(story.thumbnailPath, generating) { mutableStateOf(false) }
-    Box(
-        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (story.thumbnailPath != null && (!failed || generating)) {
-            key(story.thumbnailPath, generating) {
-                AsyncImage(
-                    model = File(story.thumbnailPath),
-                    contentDescription = stringResource(R.string.feed_thumbnail_description, story.title),
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    onState = { state ->
-                        imageLoaded = state is AsyncImagePainter.State.Success
-                        if (state is AsyncImagePainter.State.Error) {
-                            currentOnIntent(FeedIntent.ThumbnailLoadFailed(story.id))
-                        }
-                    },
-                )
-            }
-        }
-        if (queued && !imageLoaded) {
-            Text(stringResource(R.string.feed_thumbnail_queued))
-        } else if (failed && !generating) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(stringResource(R.string.feed_thumbnail_error))
-                Button(onClick = { onIntent(FeedIntent.RetryThumbnail(story.id)) }) {
-                    Text(stringResource(R.string.feed_thumbnail_retry))
-                }
-            }
-        } else if (!imageLoaded) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+    val options = listOf(
+        StoryFeedType.TOP to R.string.feed_top_stories,
+        StoryFeedType.NEW to R.string.feed_new_stories,
+    )
+    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+        options.forEachIndexed { index, (feedType, label) ->
+            SegmentedButton(
+                selected = feedType == selectedFeed,
+                onClick = { onIntent(FeedIntent.SelectFeed(feedType)) },
+                shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
             ) {
-                CircularProgressIndicator()
-                Text(stringResource(R.string.feed_thumbnail_loading))
+                Text(stringResource(label))
             }
         }
     }

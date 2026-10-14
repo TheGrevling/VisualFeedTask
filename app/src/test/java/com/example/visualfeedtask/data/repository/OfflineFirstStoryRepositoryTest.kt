@@ -4,6 +4,7 @@ import com.example.visualfeedtask.core.network.HttpException
 import com.example.visualfeedtask.data.local.StoryDao
 import com.example.visualfeedtask.data.local.StoryEntity
 import com.example.visualfeedtask.data.local.toStory
+import com.example.visualfeedtask.data.model.StoryFeedType
 import com.example.visualfeedtask.data.model.StoryPageKey
 import com.example.visualfeedtask.data.remote.HackerNewsApi
 import com.example.visualfeedtask.data.remote.HackerNewsItemDto
@@ -37,13 +38,29 @@ class OfflineFirstStoryRepositoryTest {
             items = ids.associateWith { item(it) }
         }
 
-        val feed = OfflineFirstStoryRepository(dao, api, dispatcher).getStories()
+        val feed = OfflineFirstStoryRepository(dao, api, { true }, dispatcher).getStories()
 
         assertEquals(listOf(9L, 7L), feed.stories.map { it.id })
         assertFalse(feed.isOffline)
         assertEquals("/files/7.png", feed.stories.last().thumbnailPath)
         assertEquals(feed.stories, dao.lastUpsert.map { it.toStory() })
         assertEquals(listOf(9L, 7L), api.requestedIds)
+    }
+
+    @Test
+    fun `fetches new stories when the new feed is requested`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val api = FakeHackerNewsApi(dispatcher).apply {
+            ids = listOf(1L)
+            newIds = listOf(3L, 2L)
+            items = listOf(1L, 2L, 3L).associateWith { item(it) }
+        }
+
+        val feed = OfflineFirstStoryRepository(FakeStoryDao(), api, { true }, dispatcher)
+            .getStories(feedType = StoryFeedType.NEW)
+
+        assertEquals(listOf(3L, 2L), feed.stories.map { it.id })
+        assertEquals(0, api.topIdsCallCount)
     }
 
     @Test
@@ -60,7 +77,7 @@ class OfflineFirstStoryRepositoryTest {
             )
         }
 
-        val feed = OfflineFirstStoryRepository(FakeStoryDao(), api, dispatcher).getStories()
+        val feed = OfflineFirstStoryRepository(FakeStoryDao(), api, { true }, dispatcher).getStories()
 
         assertEquals(listOf(5L), feed.stories.map { it.id })
     }
@@ -77,7 +94,7 @@ class OfflineFirstStoryRepositoryTest {
                 else idsFailure = IOException("Offline")
             }
 
-            val feed = OfflineFirstStoryRepository(dao, api, dispatcher).getStories()
+            val feed = OfflineFirstStoryRepository(dao, api, { true }, dispatcher).getStories()
 
             assertEquals(listOf(cached.toStory()), feed.stories)
             assertTrue(feed.isOffline)
@@ -86,12 +103,39 @@ class OfflineFirstStoryRepositoryTest {
     }
 
     @Test
+    fun `known offline device serves cached stories without calling the API`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val dao = FakeStoryDao(listOf(cached))
+        val api = FakeHackerNewsApi(dispatcher).apply { ids = listOf(1L) }
+
+        val feed = OfflineFirstStoryRepository(dao, api, { false }, dispatcher).getStories()
+
+        assertEquals(listOf(cached.toStory()), feed.stories)
+        assertTrue(feed.isOffline)
+        assertEquals(0, api.topIdsCallCount)
+        assertTrue(api.requestedIds.isEmpty())
+    }
+
+    @Test
+    fun `known offline device without cached stories returns an empty offline feed`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val api = FakeHackerNewsApi(dispatcher)
+
+        val feed = OfflineFirstStoryRepository(FakeStoryDao(), api, { false }, dispatcher).getStories()
+
+        assertTrue(feed.stories.isEmpty())
+        assertTrue(feed.isOffline)
+        assertEquals(null, feed.nextPage)
+        assertEquals(0, api.topIdsCallCount)
+    }
+
+    @Test
     fun `offline without cached stories propagates network failure`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val api = FakeHackerNewsApi(dispatcher).apply { idsFailure = IOException("Offline") }
 
         try {
-            OfflineFirstStoryRepository(FakeStoryDao(), api, dispatcher).getStories()
+            OfflineFirstStoryRepository(FakeStoryDao(), api, { true }, dispatcher).getStories()
             fail("Expected offline failure")
         } catch (failure: IOException) {
             assertEquals("Offline", failure.message)
@@ -106,7 +150,7 @@ class OfflineFirstStoryRepositoryTest {
             val dao = FakeStoryDao(listOf(cached))
 
             try {
-                OfflineFirstStoryRepository(dao, api, dispatcher).getStories()
+                OfflineFirstStoryRepository(dao, api, { true }, dispatcher).getStories()
                 fail("Expected ${error.javaClass.simpleName}")
             } catch (failure: HttpException) {
                 assertEquals(error.message, failure.message)
@@ -128,7 +172,7 @@ class OfflineFirstStoryRepositoryTest {
             delayed = true
         }
 
-        val feed = OfflineFirstStoryRepository(FakeStoryDao(), api, dispatcher).getStories()
+        val feed = OfflineFirstStoryRepository(FakeStoryDao(), api, { true }, dispatcher).getStories()
 
         assertEquals(api.ids.take(20), feed.stories.map { it.id })
         assertEquals(api.ids.take(20), api.requestedIds)
@@ -143,7 +187,7 @@ class OfflineFirstStoryRepositoryTest {
             this.ids = ids
             items = ids.associateWith { item(it) }
         }
-        val repository = OfflineFirstStoryRepository(FakeStoryDao(), api, dispatcher)
+        val repository = OfflineFirstStoryRepository(FakeStoryDao(), api, { true }, dispatcher)
 
         val first = repository.getStories()
         assertEquals((1L..20L).toList(), first.stories.map { it.id })
@@ -173,7 +217,7 @@ class OfflineFirstStoryRepositoryTest {
         val api = FakeHackerNewsApi(dispatcher).apply {
             idsFailure = IOException("Offline")
         }
-        val repository = OfflineFirstStoryRepository(FakeStoryDao(cachedStories), api, dispatcher)
+        val repository = OfflineFirstStoryRepository(FakeStoryDao(cachedStories), api, { true }, dispatcher)
 
         val first = repository.getStories()
         assertEquals((1L..20L).toList(), first.stories.map { it.id })
@@ -202,7 +246,7 @@ class OfflineFirstStoryRepositoryTest {
             this.ids = ids
             items = ids.associateWith { item(it) }
         }
-        val repository = OfflineFirstStoryRepository(FakeStoryDao(), api, dispatcher)
+        val repository = OfflineFirstStoryRepository(FakeStoryDao(), api, { true }, dispatcher)
         val first = repository.getStories()
         val failedPage = checkNotNull(first.nextPage)
         api.itemFailure = IOException("Offline")
@@ -240,7 +284,7 @@ class OfflineFirstStoryRepositoryTest {
             items = ids.associateWith { item(it) }
         }
         val dao = FakeStoryDao(cachedStories)
-        val repository = OfflineFirstStoryRepository(dao, api, dispatcher)
+        val repository = OfflineFirstStoryRepository(dao, api, { true }, dispatcher)
         val first = repository.getStories()
         val secondPage = checkNotNull(first.nextPage)
         api.itemFailure = IOException("Offline")
@@ -267,7 +311,7 @@ class OfflineFirstStoryRepositoryTest {
             items = mapOf(7L to item(7).copy(title = "Changed"))
         }
 
-        val feed = OfflineFirstStoryRepository(FakeStoryDao(listOf(cached)), api, dispatcher).getStories()
+        val feed = OfflineFirstStoryRepository(FakeStoryDao(listOf(cached)), api, { true }, dispatcher).getStories()
 
         assertEquals(cached.thumbnailPath, feed.stories.single().thumbnailPath)
     }
@@ -298,6 +342,7 @@ private class FakeHackerNewsApi(private val dispatcher: CoroutineDispatcher) : H
     var itemFailure: IOException? = null
     val requestedIds = mutableListOf<Long>()
     var delayed = false
+    var newIds = emptyList<Long>()
     var topIdsCallCount = 0
     private var concurrent = 0
     var maxConcurrent = 0
@@ -309,7 +354,11 @@ private class FakeHackerNewsApi(private val dispatcher: CoroutineDispatcher) : H
         return ids
     }
 
-    override suspend fun getNewStoryIds(): List<Long> = error("Must fetch Top stories")
+    override suspend fun getNewStoryIds(): List<Long> {
+        assertSame(dispatcher, coroutineContext[ContinuationInterceptor])
+        idsFailure?.let { throw it }
+        return newIds
+    }
 
     override suspend fun getItem(id: Long): HackerNewsItemDto? {
         assertSame(dispatcher, coroutineContext[ContinuationInterceptor])

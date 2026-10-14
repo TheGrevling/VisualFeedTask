@@ -1,8 +1,12 @@
 package com.example.visualfeedtask.data.repository
 
 import com.example.visualfeedtask.data.model.StoryFeed
+import com.example.visualfeedtask.data.model.StoryFeedType
 import com.example.visualfeedtask.data.model.StoryPageKey
 
 interface StoryRepository {
-    suspend fun getStories(page: StoryPageKey? = null): StoryFeed
+    suspend fun getStories(
+        page: StoryPageKey? = null,
+        feedType: StoryFeedType = StoryFeedType.TOP,
+    ): StoryFeed
 }

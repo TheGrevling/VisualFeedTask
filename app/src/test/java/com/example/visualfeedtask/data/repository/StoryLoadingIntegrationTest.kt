@@ -58,17 +58,17 @@ class StoryLoadingIntegrationTest {
             .build()
         val dao = IntegrationStoryDao()
         val api = HackerNewsApiImpl(HttpClientImpl(transport, Dispatchers.IO), Gson(), Dispatchers.IO)
-        val repository = OfflineFirstStoryRepository(dao, api, Dispatchers.IO)
+        val repository = OfflineFirstStoryRepository(dao, api, { !offline.get() }, Dispatchers.IO)
 
         val thumbnails = StoryThumbnailRepository { "/files/${it.id}.jpg" }
-        val onlineViewModel = FeedViewModel(repository, thumbnails)
+        val onlineViewModel = FeedViewModel(repository, thumbnails, imageGenerationDisabled = false)
         val online = onlineViewModel.uiState.first { it is FeedUiState.Ready } as FeedUiState.Ready
         assertEquals(listOf(9L, 7L), online.stories.map { it.id })
         assertFalse(online.isOffline)
         assertEquals(3, server.requestCount)
 
         offline.set(true)
-        val offlineViewModel = FeedViewModel(repository, thumbnails)
+        val offlineViewModel = FeedViewModel(repository, thumbnails, imageGenerationDisabled = false)
         val saved = offlineViewModel.uiState.first { it is FeedUiState.Ready } as FeedUiState.Ready
         assertTrue(saved.isOffline)
         assertEquals(online.stories, saved.stories)
